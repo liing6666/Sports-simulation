@@ -115,7 +115,7 @@ pub fn build_gpx(name: &str, start_ms: i64, rows: &[TrackRow<'_>]) -> String {
     // 补上自定义命名空间声明，否则 ns 前缀未定义，导入工具会报错。
     out.replace(
         "xmlns=\"http://www.topografix.com/GPX/1/1\">",
-        "xmlns=\"http://www.topografix.com/GPX/1/1\" xmlns:nsw=\"https://github.com/YanamiNeko/NekoSportsWorldTool\">",
+        "xmlns=\"http://www.topografix.com/GPX/1/1\" xmlns:nsw=\"https://github.com/liming2500/NekoSportsWorldTool\">",
     )
 }
 

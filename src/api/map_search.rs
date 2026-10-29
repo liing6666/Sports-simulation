@@ -187,7 +187,7 @@ fn fetch(endpoint: &str, query: &str) -> Result<Vec<u8>, String> {
         .timeout(Duration::from_secs(20))
         .build();
     let response=agent.get(endpoint)
-        .set("User-Agent","NekoSportsWorldTool/0.3.0 (school-boundary-test; https://github.com/GAN1112233131/NekoSportsWorldTool)")
+        .set("User-Agent","NekoSportsWorldTool/0.3.0 (school-boundary-test; https://github.com/liming2500/NekoSportsWorldTool)")
         .query("q",query).query("format","jsonv2").query("polygon_geojson","1")
         .query("extratags","1").query("limit","10").call().map_err(|e|format!("备用地图查询失败：{e}"))?;
     let mut bytes = Vec::new();

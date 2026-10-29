@@ -8,8 +8,9 @@
 
 use crate::api::client::{make_agent, ureq_err};
 
-pub const REPO_UPSTREAM: &str = "YanamiNeko/NekoSportsWorldTool";
-pub const REPO_FORK: &str = "hb-degithub/NekoSportsWorldTool";
+pub const REPO_UPSTREAM: &str = "liming2500/NekoSportsWorldTool";
+/// Android 端额外查询的仓库；与上游相同，保留该常量以兼容既有分支逻辑。
+pub const REPO_FORK: &str = "liming2500/NekoSportsWorldTool";
 
 const UA: &str = concat!("NekoSportsWorldTool/", env!("CARGO_PKG_VERSION"));
 
@@ -27,7 +28,9 @@ fn repos() -> Vec<String> {
     let list = [REPO_UPSTREAM, REPO_FORK];
     #[cfg(not(target_os = "android"))]
     let list = [REPO_UPSTREAM];
-    list.iter().map(|s| s.to_string()).collect()
+    let mut repos: Vec<String> = list.iter().map(|s| s.to_string()).collect();
+    repos.dedup();
+    repos
 }
 
 /// 当前平台对应的 Release 资产名；无匹配产物的平台返回 None。
