@@ -47,3 +47,4 @@ docs/_preview.png
 # 自动更新替换残留
 *.exe.old
 *.exe.new
+/dist_20261029/
