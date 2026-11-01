@@ -11,12 +11,12 @@
 
 .EXAMPLE
 ./android/release.ps1 -AndroidRev 4                        # 发到 fork
-./android/release.ps1 -AndroidRev 4 -Repo liming2500/NekoSportsWorldTool -Notes "修复"
+./android/release.ps1 -AndroidRev 4 -Repo liing6666/Sports-simulation -Notes "修复"
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][ValidateRange(1, 99)][int]$AndroidRev,
-    [string]$Repo = 'liming2500/NekoSportsWorldTool',
+    [string]$Repo = 'liing6666/Sports-simulation',
     [string]$Notes = '',
     [switch]$Draft,
     [switch]$SkipBuild

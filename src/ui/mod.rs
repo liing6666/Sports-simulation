@@ -520,10 +520,10 @@ fn draw_right_side(
     update: &about::UpdateUi,
 ) -> bool {
     ui.hyperlink_to(
-        egui::RichText::new("liming2500")
+        egui::RichText::new("liing6666")
             .small()
             .color(theme::text_dim()),
-        "https://github.com/liming2500",
+        "https://github.com/liing6666",
     );
     ui.label(small("Powered by".into()));
     ui.separator();

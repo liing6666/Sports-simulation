@@ -20,7 +20,7 @@ Android 移植保留 Rust 业务逻辑、桌面 GUI/CLI 与七个功能页面。
 
 ```powershell
 ./android/release.ps1 -AndroidRev 4                       # 发到 fork（默认）
-./android/release.ps1 -AndroidRev 5 -Repo liming2500/NekoSportsWorldTool -Notes "..."
+./android/release.ps1 -AndroidRev 5 -Repo liing6666/Sports-simulation -Notes "..."
 ```
 
 脚本会读 Cargo.toml 版本、盖章 AndroidManifest（versionName=`<版本>-android.<N>`）、构建 arm64 并以固定资产名 `NekoSportsWorldTool-android-arm64.apk` 上传。**必须一直用同一个签名密钥**（`android/.signing/local-test.keystore`）：签名变化后手机无法覆盖安装，卸载重装还会丢 identity/session。

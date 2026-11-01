@@ -8,9 +8,9 @@
 
 use crate::api::client::{make_agent, ureq_err};
 
-pub const REPO_UPSTREAM: &str = "liming2500/NekoSportsWorldTool";
+pub const REPO_UPSTREAM: &str = "liing6666/Sports-simulation";
 /// Android 端额外查询的仓库；与上游相同，保留该常量以兼容既有分支逻辑。
-pub const REPO_FORK: &str = "liming2500/NekoSportsWorldTool";
+pub const REPO_FORK: &str = "liing6666/Sports-simulation";
 
 const UA: &str = concat!("NekoSportsWorldTool/", env!("CARGO_PKG_VERSION"));
 
