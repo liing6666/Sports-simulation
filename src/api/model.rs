@@ -509,6 +509,66 @@ fn default_geo_fences_json() -> String {
     "[]".into()
 }
 
+/// Checkpoints must belong to the active campus area, not merely share its anchor metadata.
+/// 50 km is a deliberately generous corruption guard; it is not a route-planning radius.
+const MAX_POINT_ANCHOR_DISTANCE_M: f64 = 50_000.0;
+
+/// Validate every checkpoint against the active anchor. Prefer the API's GCJ pair; older
+/// records may only have BD coordinates, whose sub-kilometre offset is below this guard.
+pub fn validate_points_for_anchor(
+    anchor: crate::location::Coordinate,
+    points: &[serde_json::Value],
+) -> Result<f64, String> {
+    anchor.validate()?;
+    if points.is_empty() {
+        return Err("点位列表为空".into());
+    }
+
+    let mut max_distance_m: f64 = 0.0;
+    for (index, point) in points.iter().enumerate() {
+        let gcj = point
+            .get("glat")
+            .and_then(serde_json::Value::as_f64)
+            .zip(point.get("glon").and_then(serde_json::Value::as_f64));
+        let bd = point
+            .get("lat")
+            .and_then(serde_json::Value::as_f64)
+            .zip(point.get("lon").and_then(serde_json::Value::as_f64));
+        let (lat, lon) = gcj.or(bd).ok_or_else(|| {
+            format!("打卡点[{}]缺少有效经纬度", index)
+        })?;
+        crate::location::Coordinate::new(lat, lon, 0.0)
+            .map_err(|e| format!("打卡点[{}]坐标无效：{e}", index))?;
+
+        let distance_m = haversine_distance_m(anchor.latitude, anchor.longitude, lat, lon);
+        if !distance_m.is_finite() {
+            return Err(format!("打卡点[{}]到锚点的距离无效", index));
+        }
+        if distance_m > MAX_POINT_ANCHOR_DISTANCE_M {
+            let name = point
+                .get("pointName")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("未命名点位");
+            return Err(format!(
+                "打卡点「{name}」距当前锚点 {:.1} km，超过 {:.0} km，拒绝使用",
+                distance_m / 1000.0,
+                MAX_POINT_ANCHOR_DISTANCE_M / 1000.0
+            ));
+        }
+        max_distance_m = max_distance_m.max(distance_m);
+    }
+    Ok(max_distance_m)
+}
+
+fn haversine_distance_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    let radians = std::f64::consts::PI / 180.0;
+    let (lat1, lat2) = (lat1 * radians, lat2 * radians);
+    let (dlat, dlon) = ((lat2 - lat1), (lon2 - lon1) * radians);
+    let h = (dlat / 2.0).sin().powi(2)
+        + lat1.cos() * lat2.cos() * (dlon / 2.0).sin().powi(2);
+    2.0 * 6_371_000.0 * h.clamp(0.0, 1.0).sqrt().asin()
+}
+
 /// 只返回与本次锚点相同的缓存。旧版未记录锚点的缓存会自然失效，避免串城市。
 pub fn load_points_cache_for(
     anchor: crate::location::Coordinate,
@@ -524,7 +584,9 @@ pub fn load_points_cache_context_for(
     if cache.checkpoint_schema != 1 {
         return None;
     }
-    if !cache.anchor.is_near(anchor, 0.0001) {
+    if !cache.anchor.is_near(anchor, 0.0001)
+        || validate_points_for_anchor(anchor, &cache.points).is_err()
+    {
         return None;
     }
     let area = crate::track::wire::RunAreaMeta {
@@ -548,6 +610,7 @@ pub fn save_points_cache_context(
     points: &[serde_json::Value],
     area: &crate::track::wire::RunAreaMeta,
 ) -> Result<(), String> {
+    validate_points_for_anchor(anchor, points)?;
     let doc = PointsCache {
         checkpoint_schema: 1,
         ts: crate::crypto::envelope::now_ms(),
@@ -599,6 +662,59 @@ mod points_cache_tests {
         save_points_cache_context(anchor, &points, &crate::track::wire::RunAreaMeta::default())
             .unwrap();
         assert_eq!(load_points_cache_for(anchor).unwrap().1, points);
+    }
+
+    #[test]
+    fn rejects_beijing_checkpoints_for_shaoguan_anchor() {
+        let directory = std::env::temp_dir().join(format!("neko-cache-distance-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        crate::platform::TEST_DATA_DIR.with(|p| *p.borrow_mut() = Some(directory.clone()));
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                crate::platform::TEST_DATA_DIR.with(|p| *p.borrow_mut() = None);
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(directory);
+        let anchor = crate::location::Coordinate::new(24.895992, 113.556283, 0.0).unwrap();
+        let beijing = vec![serde_json::json!({
+            "lat": 39.914756,
+            "lon": 116.403836,
+            "glat": 39.908413,
+            "glon": 116.397463,
+            "pointName": "点位2"
+        })];
+        write_json("points_cache.json", &serde_json::json!({
+            "checkpoint_schema": 1,
+            "ts": crate::crypto::envelope::now_ms(),
+            "anchor": anchor,
+            "points": beijing,
+        })).unwrap();
+        assert!(load_points_cache_for(anchor).is_none());
+        assert!(save_points_cache_context(
+            anchor,
+            &[serde_json::json!({
+                "lat": 39.914756,
+                "lon": 116.403836,
+                "glat": 39.908413,
+                "glon": 116.397463,
+                "pointName": "点位2"
+            })],
+            &crate::track::wire::RunAreaMeta::default(),
+        ).is_err());
+    }
+
+    #[test]
+    fn validates_gcj_point_pair_near_anchor_despite_bd_offset() {
+        let anchor = crate::location::Coordinate::new(24.895992, 113.556283, 0.0).unwrap();
+        let point = serde_json::json!({
+            "lat": 24.9020,
+            "lon": 113.5625,
+            "glat": 24.895992,
+            "glon": 113.556283,
+        });
+        assert_eq!(validate_points_for_anchor(anchor, &[point]).unwrap(), 0.0);
     }
 
     #[test]

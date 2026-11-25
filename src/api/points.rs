@@ -23,6 +23,30 @@ fn six_digit(v: f64) -> String {
     format!("{v:.6}")
 }
 
+fn extract_points_with_source(payload: &Value) -> (Vec<Value>, &'static str) {
+    let explicit_names = ["pointsResModels", "pointResModels", "pointsModelList"];
+    if let Some((source, value)) = find_value_recursive_with_name(payload, &explicit_names, 8) {
+        return (point_array(value).unwrap_or_default(), source);
+    }
+    if let Some(value) = find_checkpoint_fallback(payload, 8, false) {
+        return (
+            point_array(value).unwrap_or_default(),
+            "generic pointList/points fallback",
+        );
+    }
+    (Vec::new(), "none")
+}
+
+fn point_array(value: Value) -> Option<Vec<Value>> {
+    match value {
+        Value::Array(items) => Some(items),
+        Value::String(text) => serde_json::from_str::<Value>(&text)
+            .ok()
+            .and_then(|value| value.as_array().cloned()),
+        _ => None,
+    }
+}
+
 /// 拉取实时点位（带缓存回退）。
 pub fn fetch_points(
     client: &mut ApiClient,
@@ -78,6 +102,9 @@ pub fn fetch_points_context_ext(
         .unwrap_or_else(|| "0".into());
     let lat = anchor.latitude;
     let lon = anchor.longitude;
+    log(&format!(
+        "[points] 请求锚点=({lat:.6},{lon:.6})，学校编号={unid}"
+    ));
     let url = format!("{}{}", model::HOST, POINTS_PATH);
 
     let start_ms = crate::crypto::envelope::now_ms();
@@ -105,53 +132,60 @@ pub fn fetch_points_context_ext(
     let body = body.to_string();
 
     let out = client.envelope_request("POST", &url, &body, crate::crypto::header::UA_IOS, &[])?;
-    let fallback = |log: &mut dyn FnMut(&str)| -> Result<PointsContext, String> {
-        if let Some((_ts, pts, area)) = model::load_points_cache_context_for(anchor) {
-            if !pts.is_empty() {
-                log("[points] 接口失败，回退最近一次接口结果缓存");
-                return Ok(PointsContext { points: pts, area });
+    let fallback =
+        |log: &mut dyn FnMut(&str), cause: Option<&str>| -> Result<PointsContext, String> {
+            if let Some((_ts, pts, area)) = model::load_points_cache_context_for(anchor) {
+                if !pts.is_empty() {
+                    log("[points] 接口失败，回退最近一次且通过锚点校验的点位缓存");
+                    return Ok(PointsContext { points: pts, area });
+                }
             }
-        }
-        Err("点位接口失败且无缓存".into())
-    };
+            match cause {
+                Some(reason) => Err(format!("{reason}；且没有有效的本地点位缓存")),
+                None => Err("点位接口失败且没有有效的本地点位缓存".into()),
+            }
+        };
     let Some(dec) = out.decrypted else {
-        return fallback(log);
+        return fallback(log, None);
     };
     let payload = &dec.business;
-    // pointsResModels 在不同版本接口中可能位于 data/result，甚至被编码成 JSON 字符串。
-    let pts = extract_points(payload);
+    // 记录实际选中的响应字段，便于区分服务端返回错误与解析器选错列表。
+    let (pts, source) = extract_points_with_source(payload);
+    log(&format!("[points] 解析来源={source}，返回 {} 点", pts.len()));
     if !pts.is_empty() {
+        let max_distance_m = match model::validate_points_for_anchor(anchor, &pts) {
+            Ok(distance) => distance,
+            Err(reason) => {
+                log(&format!("[points] 拒绝与当前锚点不匹配的接口点位：{reason}"));
+                return fallback(log, Some(&reason));
+            }
+        };
+        log(&format!(
+            "[points] 坐标校验通过，{} 点最远距锚点 {:.2} km",
+            pts.len(),
+            max_distance_m / 1000.0
+        ));
         let area = area_from_payload(payload, &pts);
-        let _ = model::save_points_cache_context(anchor, &pts, &area);
+        if let Err(error) = model::save_points_cache_context(anchor, &pts, &area) {
+            log(&format!("[points] 点位未写入缓存：{error}"));
+        }
         return Ok(PointsContext { points: pts, area });
     }
     let err = payload.get("error").and_then(|e| e.as_i64()).unwrap_or(0);
-    log(&format!(
-        "[points] 接口无点位 error={err}: {}",
+    let reason = format!(
+        "点位接口无有效点位 error={err}: {}",
         payload
             .get("message")
             .and_then(|m| m.as_str())
             .unwrap_or("")
-    ));
-    fallback(log)
+    );
+    log(&format!("[points] {reason}"));
+    fallback(log, Some(&reason))
 }
 
+#[cfg(test)]
 fn extract_points(payload: &Value) -> Vec<Value> {
-    // Prefer the explicit checkpoint fields.  Some responses also contain
-    // geo-fences with a generic `points` array; walking those fields first
-    // makes the fence vertices look like run checkpoints and breaks the road
-    // preview.
-    let explicit_names = ["pointsResModels", "pointResModels", "pointsModelList"];
-    find_value_recursive(payload, &explicit_names, 8)
-        .or_else(|| find_checkpoint_fallback(payload, 8, false))
-        .and_then(|value| match value {
-            Value::Array(items) => Some(items),
-            Value::String(text) => serde_json::from_str::<Value>(&text)
-                .ok()
-                .and_then(|v| v.as_array().cloned()),
-            _ => None,
-        })
-        .unwrap_or_default()
+    extract_points_with_source(payload).0
 }
 
 fn find_checkpoint_fallback(root: &Value, depth: usize, inside_fence: bool) -> Option<Value> {
@@ -223,6 +257,44 @@ fn find_value_recursive(root: &Value, names: &[&str], depth: usize) -> Option<Va
         Value::String(text) => {
             if let Ok(parsed) = serde_json::from_str::<Value>(text) {
                 return find_value_recursive(&parsed, names, depth - 1);
+            }
+        }
+        _ => {}
+    }
+    None
+}
+
+fn find_value_recursive_with_name(
+    root: &Value,
+    names: &[&'static str],
+    depth: usize,
+) -> Option<(&'static str, Value)> {
+    if depth == 0 {
+        return None;
+    }
+    match root {
+        Value::Object(map) => {
+            for name in names {
+                if let Some(value) = map.get(*name).filter(|value| !value.is_null()) {
+                    return Some((*name, value.clone()));
+                }
+            }
+            for value in map.values() {
+                if let Some(found) = find_value_recursive_with_name(value, names, depth - 1) {
+                    return Some(found);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for value in items {
+                if let Some(found) = find_value_recursive_with_name(value, names, depth - 1) {
+                    return Some(found);
+                }
+            }
+        }
+        Value::String(text) => {
+            if let Ok(parsed) = serde_json::from_str::<Value>(text) {
+                return find_value_recursive_with_name(&parsed, names, depth - 1);
             }
         }
         _ => {}
@@ -578,5 +650,18 @@ mod tests {
             extract_points(&json!({"geoFences": [{"points": [{"lat": 1.0, "lon": 2.0}]}]}))
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn extraction_reports_the_selected_checkpoint_field() {
+        let explicit = json!({"data": {"pointsResModels": [{"lat": 39.2, "lon": 116.2}]}});
+        let (points, source) = extract_points_with_source(&explicit);
+        assert_eq!(source, "pointsResModels");
+        assert_eq!(points.len(), 1);
+
+        let generic = json!({"data": {"result": {"pointList": [{"lat": 39.2, "lon": 116.2}]}}});
+        let (points, source) = extract_points_with_source(&generic);
+        assert_eq!(source, "generic pointList/points fallback");
+        assert_eq!(points.len(), 1);
     }
 }
